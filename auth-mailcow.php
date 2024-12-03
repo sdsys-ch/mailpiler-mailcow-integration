@@ -102,25 +102,60 @@ function mailcow_get_aliases($mailbox = '')
 		// API returned something wrong
 		return [];
 	}
-	
-	// valid data. yay!
-	$emails = [];
-	$mailbox = strtolower($mailbox);
+
+	// build an array of active aliases
+	$active_aliases = [];
 	foreach ($api as $alias) {
-		// check if alias is active (this is for newer instances)
-		if (isset($alias->active_int) && $alias->active_int !== 1) {
-			continue;
+		// skip inactive aliases, new and old instance api fields
+		if ((isset($alias->active_int) && $alias->active_int !== 1) ||
+		    (isset($alias->active) && $alias->active !== 1)) {
+	 		continue;
 		}
-		// check if alias is active (for older instances where active used)
-		if (isset($alias->active) && $alias->active !== 1) {
-			continue;
+		$active_aliases[] = [
+			'address' => trim(strtolower($alias->address)),
+			'goto' => array_map('trim', array_map('strtolower', explode(',', $alias->goto)))
+		];
+	}
+
+	// recursively find all aliases that route to the mailbox
+	$find_routing_aliases = function($target, $seen = []) use (&$find_routing_aliases, $active_aliases) {
+		$result = [];
+
+		foreach ($active_aliases as $alias) {
+			// skip if we've already processed this alias (prevent loops)
+			if (in_array($alias['address'], $seen)) {
+				continue;
+			}
+
+			// check if alias routes to target
+			if (in_array($target, $alias['goto'])) {
+				$result[] = $alias['address'];
+				// recursively find aliases that route to this specific one
+				$result = array_merge(
+					$result,
+					$find_routing_aliases($alias['address'], array_merge($seen, [$alias['address']]))
+				);
+			}
 		}
-		// if user email address is added to alias goto, allow access
-		if (strpos(strtolower($alias->goto), $mailbox) !== false) {
-			array_push($emails, trim(strtolower($alias->address)));
+
+		return array_unique($result);
+	};
+
+	// find all aliases that route to our mailbox
+	$mailbox = strtolower($mailbox);
+	$emails = $find_routing_aliases($mailbox);
+
+	// add wildcard aliases (@domain.tld)
+	foreach ($active_aliases as $alias) {
+		if (substr($alias['address'], 0, 1) === '@') {
+			// For wildcards, check if any goto matches our target mailbox
+			if (in_array($mailbox, $alias['goto'])) {
+				$emails[] = $alias['address'];
+			}
 		}
 	}
-	return $emails;
+
+	return array_unique($emails);
 }
 
 // mailcow_query_api($path) queries the mailcow API and returns
